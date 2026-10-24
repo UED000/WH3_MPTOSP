@@ -61,6 +61,7 @@ app.ico                   # 软件图标（构建时使用）
 mp2sp_gui.py              # 程序入口
 convert_mp_sp.py          # MP→SP 转换核心
 esf.py / tables.py        # 存档读写与派系表
+faction_portraits.py      # 派系领袖头像路径
 i18n.py / locdb.py        # 空桩
 README.md
 ```

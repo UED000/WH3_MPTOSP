@@ -10,6 +10,7 @@ import sys
 from esf import (SaveFile, EsfFile, Record, RecordBlock, Value, ValueArray,
                  write_varint, LZMA_FILTER)
 import tables
+from faction_portraits import FACTION_PORTRAITS
 
 
 def name_idx(esf, name):
@@ -89,7 +90,62 @@ def group_node(esf, mp_hdr, block_name, index, empty_code):
     return bytes([empty_code]) + bytes([0])
 
 
-def build_sp_header(esf, mp_hdr, keep, save_name):
+def _faction_leader_id(rec):
+    gov = rec.child("GOVERNMENT")
+    if gov is None:
+        return None
+    block = next((c for c in gov.children if isinstance(c, RecordBlock)), None)
+    if block is None:
+        return None
+    for entry in block.entries:
+        for node in entry.children:
+            if isinstance(node, Record) and node.name == "CHARACTER_POST":
+                vals = [c.value for c in node.children if isinstance(c, Value)]
+                if len(vals) >= 3 and vals[1] == "faction_leader" and isinstance(vals[2], int):
+                    return vals[2]
+    return None
+
+
+def _leader_unit_key(rec, leader_id):
+    aa = rec.child("ARMY_ARRAY")
+    if aa is None or leader_id is None:
+        return None
+    for entry in aa.entries:
+        force = entry.children[0] if entry.children else None
+        if force is None:
+            continue
+        vals = [c.value for c in force.children if isinstance(c, Value)]
+        if len(vals) < 2 or vals[1] != leader_id:
+            continue
+        uc = force.child("UNIT_CONTAINER")
+        block = next((c for c in uc.children if isinstance(c, RecordBlock)), None) if uc else None
+        if block is None or not block.entries:
+            continue
+        unit = block.entries[0].children[0]
+        key = unit.child("UNIT_RECORD_KEY")
+        if key is not None and key.children:
+            return str(key.children[0].value)
+    return None
+
+
+def faction_portrait(faction_key, rec):
+    """Pick the faction leader portrait path stored in the SP header."""
+    options = FACTION_PORTRAITS.get(faction_key, [])
+    if not options:
+        return ""
+    leader_id = _faction_leader_id(rec)
+    unit_key = _leader_unit_key(rec, leader_id)
+    if unit_key:
+        for subtype, image in options:
+            if unit_key == subtype + "_0" or unit_key.startswith(subtype + "_"):
+                return image
+    images = {image for _subtype, image in options}
+    if len(images) == 1:
+        return next(iter(images))
+    return options[0][1]
+
+
+def build_sp_header(esf, mp_hdr, keep, save_name, portrait=""):
     """Assemble SAVE_GAME_HEADER (v3) bytes from MP header data."""
     k = mp_hdr.children
     _, faction_key, flags_path, faction_name, _ = player_block(mp_hdr, keep)
@@ -99,7 +155,7 @@ def build_sp_header(esf, mp_hdr, keep, save_name):
     season = str(k[5].value)
     parts = [
         enc_ascii(esf, faction_key),        # 0 faction key
-        enc_ascii(esf, ""),                 # 1 portrait (cosmetic, empty)
+        enc_ascii(esf, portrait),           # 1 faction leader portrait
         enc_u32(turn_a),                    # 2
         enc_u32(turn_b),                    # 3
         enc_utf16(esf, season),             # 4
@@ -182,6 +238,15 @@ def _set_u32_array(arr, ids):
     arr.mark_dirty()
 
 
+def _turn_group_order(ids):
+    """Native SP keeps AI faction ids sorted, with faction id 1 last."""
+    out = sorted(set(ids))
+    if 1 in out:
+        out.remove(1)
+        out.append(1)
+    return out
+
+
 def _human_flag_node(rec):
     return next((c for c in rec.children if isinstance(c, Value) and c.type_name == "ascii"
                  and str(c.value) in HUMAN_STATES), None)
@@ -249,46 +314,38 @@ def repair_converted(save):
             others = [g for g in groups if g is not human[0]]
             if others:
                 e2, head2, ids2 = max(others, key=lambda g: len(g[2]))
-                _set_u32_array(head2, ids2 + [i for i in moved if i not in ids2])
+                _set_u32_array(head2, _turn_group_order(ids2 + moved))
     return fixed, moved
 
 
-def _refresh_demoted_units(rec):
-    """Refill zero action points on a demoted player's units.
+def _enable_ai_managers(model, index_by_key, keys):
+    """Switch CAI faction managers from the human value (6) to AI (7).
 
-    In the MP save the non-active player's units can be stored with 0 current
-    action points. After that faction is demoted to AI the game does not always
-    reset them on load, leaving its armies frozen. Only the demoted players are
-    touched; the kept player's remaining movement is preserved.
+    A faction that was human in the MP save keeps CAI_FACTION_MANAGER state 6.
+    With state 6 the game may still run settlement construction, but military
+    and character AI stays inactive. Native AI factions use 7.
     """
-    aa = rec.child("ARMY_ARRAY")
-    if aa is None:
+    cai = model.child("CAI_INTERFACE")
+    manager = cai.child("CAI_FACTION_MANAGER_MANAGER") if cai is not None else None
+    if manager is None:
+        return 0
+    block = next((c for c in manager.children if isinstance(c, RecordBlock)), None)
+    if block is None:
         return 0
     changed = 0
-    for entry in aa.entries:
-        f = entry.children[0] if entry.children else None
-        if f is None:
+    for key in keys:
+        idx = index_by_key.get(key)
+        if idx is None or idx < 0 or idx >= len(block.entries):
             continue
-        uc = f.child("UNIT_CONTAINER")
-        if uc is None:
+        entry = block.entries[idx]
+        rec = next((c for c in entry.children
+                    if isinstance(c, Record) and c.name == "CAI_FACTION_MANAGER"), None)
+        if rec is None:
             continue
-        blk = next((c for c in uc.children if isinstance(c, RecordBlock)), None)
-        if blk is None:
-            continue
-        for ue in blk.entries:
-            u = ue.children[0] if ue.children else None
-            if u is None:
-                continue
-            ap = u.child("UNIT_ACTION_POINTS")
-            if ap is None:
-                continue
-            vals = [c for c in ap.children if isinstance(c, Value)]
-            if len(vals) < 3:
-                continue
-            cur, maximum = vals[0].value, vals[2].value
-            if isinstance(cur, int) and isinstance(maximum, int) and 0 <= cur < maximum:
-                vals[0].value = maximum
-                changed += 1
+        vals = [c for c in rec.children if isinstance(c, Value)]
+        if len(vals) > 1 and vals[1].value == 6:
+            vals[1].value = 7
+            changed += 1
     return changed
 
 
@@ -302,7 +359,10 @@ def convert(mp_path, keep, out_path, save_name):
     keep_key = player_block(hdr_in, keep)[1]
     drop_keys = [player_block(hdr_in, i)[1] for i in range(n_players)
                  if i != keep]
-    facs = {f["key"]: f["record"] for f in tables.factions(s)}
+    rows = tables.factions(s)
+    facs = {f["key"]: f["record"] for f in rows}
+    index_by_key = {f["key"]: f["index"] for f in rows}
+    portrait_path = faction_portrait(keep_key, facs[keep_key])
 
     # --- 1a) setup block: exactly one human + normalise difficulty ---------
     # The MP save stores each player's difficulty twice:
@@ -370,11 +430,6 @@ def convert(mp_path, keep, out_path, save_name):
                 if node.value != val:
                     node.value = val
 
-    for key in drop_keys:
-        rec = facs.get(key)
-        if rec is not None:
-            _refresh_demoted_units(rec)
-
     # CAMPAIGN_SETUP summary (native SP: c9 == c10 == battle; c12 == battle multiplier)
     if cs.children[8].value != campaign_diff:
         cs.children[8].value = campaign_diff
@@ -420,6 +475,7 @@ def convert(mp_path, keep, out_path, save_name):
     keep_id = fac_ids[keep_key]
     drop_ids = [fac_ids[k] for k in drop_keys]
     model = env.child("CAMPAIGN_MODEL")
+    _enable_ai_managers(model, index_by_key, drop_keys)
     hf_arr = next(c for c in model.child("HUMAN_FACTIONS").children
                   if isinstance(c, ValueArray))
     _set_u32_array(hf_arr, [keep_id])
@@ -477,7 +533,7 @@ def convert(mp_path, keep, out_path, save_name):
         raise RuntimeError("TURN_CONTROL: no AI turn group found to move %s into" % drop_ids)
     e2, head2, ids2 = max(candidates, key=lambda g: len(g[2]))  # AI skupina
     cur = _u32_array_items(head2)
-    _set_u32_array(head2, cur + [d for d in drop_ids if d not in cur])
+    _set_u32_array(head2, _turn_group_order(cur + drop_ids))
     # If the fallback picked a former human group, clear its human-type markers.
     for c in e2.children:
         if isinstance(c, Value) and c.type_name == "u32":
@@ -508,7 +564,7 @@ def convert(mp_path, keep, out_path, save_name):
     build = inner.root.child("BUILD")
     env = inner.root.child("CAMPAIGN_ENV")
     parts = [copy_node(inner, build),
-             build_sp_header(inner, hdr_in, keep, save_name),
+             build_sp_header(inner, hdr_in, keep, save_name, portrait_path),
              inner._serialize(env)]                    # env is dirty (AI flag)
     content = b"".join(parts)
     root_idx = name_idx(inner, "CAMPAIGN_SAVE_GAME")
@@ -531,7 +587,7 @@ def convert(mp_path, keep, out_path, save_name):
     cd_bytes = rec_header(name_idx(outer, "COMPRESSED_DATA"), 0,
                           len(cd_content)) + cd_content
     parts = [copy_node(outer, outer.root.child("BUILD")),
-             build_sp_header(outer, hdr_out, keep, save_name),
+             build_sp_header(outer, hdr_out, keep, save_name, portrait_path),
              cd_bytes]
     content = b"".join(parts)
     root_idx = name_idx(outer, "CAMPAIGN_SAVE_GAME")
