@@ -4,6 +4,7 @@
 usage: python convert_mp_sp.py <mp_save> <player_index 0|1> <out_path> <save_name>
 """
 import lzma
+import os
 import struct
 import sys
 
@@ -210,7 +211,11 @@ def _u32_array_items(arr):
     """Pole u32 id (HUMAN_FACTIONS, TURN_GROUP): hra ho ukládá nejmenším kódováním, do kterého se
     vejdou všechny prvky — 0x16 = 1 B, 0x17 = 2 B LE, 0x18 = 3 B BE, 0x08 = raw 4 B LE
     (ověřeno v optimizeru Warhammer3.exe). "arr16" vs "arr17" tedy není struktura, jen hodnoty."""
-    c, d = arr.base_code, bytes(arr.raw)
+    # Structural edits are copy-on-write: raw still points at the input file.
+    # Read the pending payload so a second demoted player does not undo the
+    # first player's manager/turn-array edit (including encoding-width changes).
+    payload = arr._new if isinstance(arr._new, (bytes, bytearray)) else arr.raw
+    c, d = arr.base_code, bytes(payload)
     if c == 0x16:
         return list(d)
     if c == 0x17:
@@ -352,30 +357,94 @@ def _strip_human_only_records(rec):
 
 
 def _enable_ai_managers(model, index_by_key, keys):
-    """Switch CAI faction managers from the human value (6) to AI (7).
+    """Enable both the faction AI and its task generator after human demotion.
 
-    A faction that was human in the MP save keeps CAI_FACTION_MANAGER state 6.
-    With state 6 the game may still run settlement construction, but military
-    and character AI stays inactive. Native AI factions use 7.
+    CAI_TASK_GENERATOR_MANAGER v0 ends with a separate suppression boolean.
+    Humans save it as True even with an empty generator list. The game's
+    generator update skips generation while it is True (WH3 9.0.4, object
+    offset 0x110). Changing CAI_FACTION_MANAGER alone does not clear it.
+    Clear the suppression and let the engine rebuild tasks from this
+    faction's own personality; never copy another faction's live tasks/IDs.
+    In-game check (2-player save): 16 -> 94/96 CAI components and
+    0 -> 78 task generators on load, with recruitment/army movement.
     """
+    if not keys:
+        return 0
     cai = model.child("CAI_INTERFACE")
     manager = cai.child("CAI_FACTION_MANAGER_MANAGER") if cai is not None else None
     if manager is None:
-        return 0
-    block = next((c for c in manager.children if isinstance(c, RecordBlock)), None)
+        raise RuntimeError("CAI faction managers not found; AI demotion was not exported")
+    block = manager.child("CAI_INTERFACE_MANAGERS")
     if block is None:
-        return 0
-    changed = 0
-    for key in keys:
-        idx = index_by_key.get(key)
-        if idx is None or idx < 0 or idx >= len(block.entries):
-            continue
-        entry = block.entries[idx]
+        raise RuntimeError("CAI_INTERFACE_MANAGERS not found")
+    world = cai.child("CAI_WORLD")
+    world_factions = world.child("CAI_WORLD_FACTIONS") if world is not None else None
+    if world_factions is None:
+        raise RuntimeError("CAI_WORLD_FACTIONS not found")
+    entries_by_id = {}
+    for entry in block.entries:
         rec = next((c for c in entry.children
                     if isinstance(c, Record) and c.name == "CAI_FACTION_MANAGER"), None)
-        if rec is None:
-            continue
+        if rec is not None:
+            vals = [c for c in rec.children if isinstance(c, Value)]
+            if vals:
+                mid = vals[0].value
+                if mid in entries_by_id:
+                    raise RuntimeError("Duplicate CAI faction manager id %s" % mid)
+                entries_by_id[mid] = entry
+    # Resolve managers through CAI_WORLD identity, not their array position.
+    # Validate every selected faction before applying any edits.
+    targets = []
+    faction_block = model.child("WORLD").child("FACTION_ARRAY")
+    for key in keys:
+        idx = index_by_key.get(key)
+        if idx is None:
+            raise RuntimeError("Faction index not found: %s" % key)
+        faction = tables.faction_record(faction_block.entries[idx])
+        faction_id = faction.children[0].value
+        matches = []
+        for entry in world_factions.entries:
+            f = next((c for c in entry.children
+                      if isinstance(c, Record) and c.name == "CAI_FACTION"), None)
+            if f is None or f.version != 2:
+                continue
+            # CAI_FACTION v2: five ID arrays, home region, campaign faction ID.
+            children = f.children
+            if len(children) > 6 and isinstance(children[6], Value) \
+                    and children[6].type_name == "u32" and children[6].value == faction_id:
+                comp = next((c for c in entry.children
+                             if isinstance(c, Record) and c.name == "CAI_BDI_COMPONENT"), None)
+                if comp is not None:
+                    matches.append(entries_by_id.get(comp.children[0].value))
+        if len(matches) != 1 or matches[0] is None:
+            raise RuntimeError("Cannot resolve CAI manager for %s (id %s)" % (key, faction_id))
+        entry = matches[0]
+        rec = next(c for c in entry.children
+                   if isinstance(c, Record) and c.name == "CAI_FACTION_MANAGER")
         vals = [c for c in rec.children if isinstance(c, Value)]
+        if len(vals) < 2 or vals[1].type_name != "u32" or vals[1].value not in (6, 7):
+            raise RuntimeError("Unsupported CAI manager state for %s" % key)
+        bdi = next((c for c in entry.children
+                    if isinstance(c, Record) and c.name == "CAI_BDI_POOL"), None)
+        desires = bdi.child("CAI_BDI_POOL_DESIRES") if bdi is not None else None
+        generators = [c for e in desires.entries for c in e.children
+                      if isinstance(c, Record) and c.name == "CAI_TASK_GENERATOR_MANAGER"] \
+            if desires is not None else []
+        if len(generators) != 1:
+            raise RuntimeError("Expected one task generator manager for %s" % key)
+        generator = generators[0]
+        gc = generator.children
+        if generator.version != 0 or len(gc) != 4 \
+                or not isinstance(gc[0], ValueArray) or gc[0].base_code not in (0x08, 0x16, 0x17, 0x18) \
+                or not all(isinstance(c, Value) and c.type_name == "f32" for c in gc[1:3]) \
+                or not isinstance(gc[3], Value) or gc[3].type_name != "bool":
+            raise RuntimeError("Unsupported CAI_TASK_GENERATOR_MANAGER layout for %s" % key)
+        targets.append((entry, vals, gc[3]))
+    changed = 0
+    for entry, vals, suppression in targets:
+        if suppression.value:
+            suppression.value = False
+            changed += 1
         if len(vals) > 1 and vals[1].value == 6:
             vals[1].value = 7
             changed += 1
@@ -403,12 +472,19 @@ def _enable_ai_managers(model, index_by_key, keys):
 
 
 def convert(mp_path, keep, out_path, save_name):
+    if os.path.normcase(os.path.abspath(mp_path)) == \
+            os.path.normcase(os.path.abspath(out_path)):
+        raise ValueError("Output must be a separate file; the original save is preserved")
     s = SaveFile(mp_path)
     drop_key = None
 
     # --- 1) campaign body: switch all OTHER players' factions to AI ---------
     hdr_in = s.inner.root.child("SAVE_GAME_HEADER_MULTIPLAYER")
+    if hdr_in is None:
+        raise ValueError("Expected a multiplayer save")
     n_players = player_count(hdr_in)
+    if not isinstance(keep, int) or not 0 <= keep < n_players:
+        raise ValueError("Player index out of range: %s" % keep)
     keep_key = player_block(hdr_in, keep)[1]
     drop_keys = [player_block(hdr_in, i)[1] for i in range(n_players)
                  if i != keep]
@@ -545,6 +621,12 @@ def convert(mp_path, keep, out_path, save_name):
         if arrs:
             groups.append((e, arrs[0], _u32_array_items(arrs[0])))
     human = [g for g in groups if keep_id in g[2]]
+    if not human:
+        # A simultaneous-turn autosave may already have removed a finished
+        # player from both pending arrays, while retaining them as leader.
+        human = [g for g in groups if any(
+            isinstance(c, Value) and c.type_name == "u32" and c.value == keep_id
+            for c in g[0].children)]
     if len(human) != 1:
         raise RuntimeError("TURN_CONTROL: expected exactly one turn group containing faction id %d, "
                            "found %d (groups: %s)" % (keep_id, len(human), [g[2] for g in groups]))
