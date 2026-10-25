@@ -318,6 +318,39 @@ def repair_converted(save):
     return fixed, moved
 
 
+def _strip_human_only_records(rec):
+    """Remove player-only faction state that keeps a demoted faction human.
+
+    Native AI factions have neither CAMPAIGN_SHROUD nor
+    CAMPAIGN_MISSION_MANAGER, and the boolean immediately before the shroud is
+    False for AI, True for a human player. If any of these stay in the save the
+    game resets CAI_FACTION_MANAGER back from 7 to 6 on the next turn.
+    """
+    children = list(rec.children)
+    human_flag = None
+    for i, child in enumerate(children):
+        if isinstance(child, Record) and child.name == "CAMPAIGN_SHROUD":
+            for prior in reversed(children[:i]):
+                if isinstance(prior, Value) and isinstance(prior.value, bool):
+                    human_flag = prior
+                    break
+            break
+
+    removed = 0
+    for name in ("CAMPAIGN_SHROUD", "CAMPAIGN_MISSION_MANAGER"):
+        for child in list(rec.children):
+            if isinstance(child, Record) and child.name == name:
+                rec.children.remove(child)
+                removed += 1
+    changed = removed
+    if human_flag is not None and human_flag.value:
+        human_flag.value = False
+        changed += 1
+    if changed:
+        rec.mark_dirty()
+    return changed
+
+
 def _enable_ai_managers(model, index_by_key, keys):
     """Switch CAI faction managers from the human value (6) to AI (7).
 
@@ -346,6 +379,26 @@ def _enable_ai_managers(model, index_by_key, keys):
         if len(vals) > 1 and vals[1].value == 6:
             vals[1].value = 7
             changed += 1
+        pool = next((c for c in entry.children
+                     if isinstance(c, Record) and c.name == "CAI_FACTION_BDI_POOL"), None)
+        if pool is not None:
+            pool_vals = [c for c in pool.children if isinstance(c, Value)]
+            if pool_vals and pool_vals[0].value is True:
+                pool_vals[0].value = False
+                changed += 1
+        manager_id = vals[0].value if vals else None
+        pair_array = next((c for c in manager.children
+                           if isinstance(c, ValueArray)), None)
+        if manager_id is not None and pair_array is not None:
+            pairs = _u32_array_items(pair_array)
+            if len(pairs) % 2 == 0:
+                for i in range(0, len(pairs), 2):
+                    if pairs[i] == manager_id:
+                        if pairs[i + 1] != 7:
+                            pairs[i + 1] = 7
+                            _set_u32_array(pair_array, pairs)
+                            changed += 1
+                        break
     return changed
 
 
@@ -476,6 +529,8 @@ def convert(mp_path, keep, out_path, save_name):
     drop_ids = [fac_ids[k] for k in drop_keys]
     model = env.child("CAMPAIGN_MODEL")
     _enable_ai_managers(model, index_by_key, drop_keys)
+    for key in drop_keys:
+        _strip_human_only_records(facs[key])
     hf_arr = next(c for c in model.child("HUMAN_FACTIONS").children
                   if isinstance(c, ValueArray))
     _set_u32_array(hf_arr, [keep_id])
