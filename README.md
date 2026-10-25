@@ -3,7 +3,7 @@
 ## [⬇ 此处下载](https://github.com/UED000/WH3_MPTOSP/releases/latest)
 
 **英文名 / exe：** `WH3_MPTOSP`（Warhammer III Multiplayer to Singleplayer）  
-**版本：** 0.1.1  
+**版本：** 0.1.2  
 **作者：** 000  
 **图标：** 顶部 `WH3`、下方双卡片 MP→SP 图标（exe 与窗口共用）
 

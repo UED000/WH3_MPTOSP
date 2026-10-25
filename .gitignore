@@ -7,3 +7,6 @@ WH3_MPTOSP.exe
 build/
 dist/
 *.spec
+
+# Local-only Chinese-named distribution build (never commit/upload)
+本地中文版/
