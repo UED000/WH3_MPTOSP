@@ -9,6 +9,16 @@
 
 双击 `WH3_MPTOSP.exe` 使用。原存档不会被修改，只会生成一个新的 `.save`。
 
+## 界面预览
+
+![主界面](docs/screenshots/screenshot_1_main.png)
+
+![玩家列表](docs/screenshots/screenshot_2_players.png)
+
+![导出进度](docs/screenshots/screenshot_3_converting.png)
+
+![导出完成](docs/screenshots/screenshot_4_done.png)
+
 ## 1.0.0-beta.2：存档信息与军事 AI
 
 - 存档信息新增“游戏版本”，显示该存档最后一次保存时的游戏构建版本。
