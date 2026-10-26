@@ -27,7 +27,7 @@ import esf
 import convert_mp_sp as conv
 
 DIFF_CODES = {0: "easy", 1: "normal", 2: "hard", 3: "very_hard", 4: "legendary"}
-APP_VERSION = "1.0.0-beta.1"
+APP_VERSION = "1.0.0-beta.2"
 APP_AUTHOR = "000"
 ICON_PNG_B64 = "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"
 
@@ -49,7 +49,7 @@ STR = {
         "btn_choose_dir": "更改目录",
         "btn_redetect": "重新检测",
         "summary_none": "尚未载入存档",
-        "summary_line": "文件：{file}    回合：{turn}    存档时间：{time}    战役：{campaign}    玩家：{players}",
+        "summary_line": "文件：{file}    回合：{turn}    存档时间：{time}\n游戏版本：{version}    战役：{campaign}    玩家：{players}",
         "mods_none": "没有 MOD（纯原版存档）",
         "mods_count": "MOD {n} 个 / 包 {total} 个",
         "col_idx": "#",
@@ -128,7 +128,7 @@ STR = {
         "btn_choose_dir": "Change folder",
         "btn_redetect": "Detect again",
         "summary_none": "No save loaded",
-        "summary_line": "File: {file}    Turn: {turn}    Saved: {time}    Campaign: {campaign}    Players: {players}",
+        "summary_line": "File: {file}    Turn: {turn}    Saved: {time}\nGame version: {version}    Campaign: {campaign}    Players: {players}",
         "mods_none": "No MODs (vanilla save)",
         "mods_count": "{n} mod(s) / {total} pack(s)",
         "col_idx": "#",
@@ -546,6 +546,9 @@ def read_save_info(path):
         turn_a, turn_b = hdr.children[3].value, hdr.children[4].value
         season = hdr.children[5].value
         campaign = hdr.children[12].value
+        game_version = ""
+        if len(hdr.children) > 14 and isinstance(hdr.children[14], esf.Value):
+            game_version = str(hdr.children[14].value).strip()
         save_time = _header_time(hdr)
         mods = _read_mods(hdr, s.campaign_root)
 
@@ -593,7 +596,8 @@ def read_save_info(path):
             p.update(_faction_details(famap.get(key), provinces, len(regions)))
             players.append(p)
         return {"turn": (turn_a, turn_b), "season": season, "campaign": campaign,
-                "save_time": save_time, "mods": mods, "players": players}
+                "game_version": game_version, "save_time": save_time,
+                "mods": mods, "players": players}
     finally:
         del s
 
@@ -662,9 +666,9 @@ def cli_self_test(argv):
     if src is None:
         return False
     info = read_save_info(src)
-    lines = ["turn=%s season=%s campaign=%s players=%d mods=%d" % (
-        info["turn"][1], info["season"], info["campaign"],
-        len(info["players"]), len(info["mods"]))]
+    lines = ["turn=%s season=%s game_version=%s campaign=%s players=%d mods=%d" % (
+        info["turn"][1], info["season"], info.get("game_version") or "?",
+        info["campaign"], len(info["players"]), len(info["mods"]))]
     for p in info["players"]:
         lines.append("#%d %s | %s | %s | camp=%s battle=%s mult=%s | id=%s treasury=%s expected=%s provinces=%s settlements=%s armies=%s chars=%s" % (
             p["index"], p["name"], p["key"], p["fname"], p["campaign"], p["battle"],
@@ -1065,6 +1069,7 @@ class App:
             file=os.path.basename(self.src or ""),
             turn=turn,
             time=info.get("save_time") or self.t("time_unknown"),
+            version=info.get("game_version") or "—",
             campaign=info.get("campaign") or "—",
             players=len(info["players"])))
 
