@@ -1,5 +1,7 @@
 # 全面战争战锤3 联机存档转为单人存档导出工具
 
+**中文** | [English](README_EN.md)
+
 ## [⬇ 此处下载](https://github.com/UED000/WH3_MPTOSP/releases/latest)
 
 - **英文名 / exe：** `WH3_MPTOSP`（Warhammer III Multiplayer to Singleplayer）
@@ -86,6 +88,7 @@ faction_portraits.py      # 派系领袖头像路径
 i18n.py / locdb.py        # 空桩
 requirements.txt
 README.md
+README_EN.md
 ```
 
 ## 许可证
